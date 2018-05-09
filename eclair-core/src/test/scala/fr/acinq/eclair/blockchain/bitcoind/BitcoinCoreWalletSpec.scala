@@ -30,7 +30,7 @@ import fr.acinq.eclair.blockchain._
 import fr.acinq.eclair.blockchain.bitcoind.rpc.{BasicBitcoinJsonRPCClient, JsonRPCError}
 import fr.acinq.eclair.transactions.Scripts
 import fr.acinq.eclair.{addressToPublicKeyScript, randomKey}
-import gigahorse.support.okhttp.Gigahorse
+import gigahorse.support.asynchttpclient.Gigahorse
 import grizzled.slf4j.Logging
 import org.json4s.JsonAST.JValue
 import org.json4s.{DefaultFormats, JString}
