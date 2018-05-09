@@ -25,6 +25,7 @@ import akka.actor.{Actor, ActorRef, ActorSystem, Props}
 import akka.pattern.pipe
 import akka.testkit.{TestKit, TestProbe}
 import fr.acinq.eclair.blockchain.bitcoind.rpc.{BasicBitcoinJsonRPCClient, BitcoinJsonRPCClient}
+import gigahorse.support.okhttp.Gigahorse
 import grizzled.slf4j.Logging
 import org.json4s.DefaultFormats
 import org.json4s.JsonAST.{JInt, JValue}
@@ -40,6 +41,7 @@ import scala.util.{Success, Try}
 @Ignore
 class IntegrationSpec extends TestKit(ActorSystem("test")) with FunSuiteLike with BeforeAndAfterAll with Logging {
   implicit val formats = DefaultFormats
+  implicit val httpClient = Gigahorse.http(Gigahorse.config)
 
   require(System.getProperty("buildDirectory") != null, "please define system property buildDirectory")
   require(System.getProperty("electrumxPath") != null, "please define system property electrumxPath")
