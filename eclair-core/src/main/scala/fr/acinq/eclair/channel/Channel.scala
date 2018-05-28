@@ -1208,6 +1208,15 @@ class Channel(val nodeParams: NodeParams, wallet: EclairWallet, remoteNodeId: Pu
     case Event(e: Error, d: DATA_CLOSING) => handleRemoteError(e, d)
 
     case Event(INPUT_DISCONNECTED | INPUT_RECONNECTED(_), _) => stay // we don't really care at this point
+
+    case Event(CMD_RESPEND_LOCAL, d: DATA_CLOSING) =>
+      d.remoteCommitPublished match {
+        case Some(remoteCommitTx) =>
+          log.info(s"remote tx ${remoteCommitTx} published")
+          handleRemoteSpentCurrent(remoteCommitTx.commitTx, d)
+        case None => log.warning(s"cannot respend their commit tx because we don't have it")
+      }
+      stay replying("ok")
   })
 
   when(CLOSED)(handleExceptions {

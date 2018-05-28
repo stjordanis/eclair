@@ -294,6 +294,11 @@ trait Service extends Logging {
                           case _ => reject(UnknownParamsRejection(req.id, "[paymentHash] or [paymentRequest]"))
                         }
 
+                        case "debug-bump-claimlocal" => req.params match {
+                          case JString(identifier) :: Nil => completeRpcFuture(req.id, sendToChannel(identifier, CMD_RESPEND_LOCAL).mapTo[String])
+                          case _ => reject(UnknownParamsRejection(req.id, "[channelId]"))
+                        }
+
                         // method name was not found
                         case _ => reject(UnknownMethodRejection(req.id))
                       }

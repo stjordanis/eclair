@@ -117,6 +117,7 @@ final case object CMD_GETSTATE extends Command
 final case object CMD_GETSTATEDATA extends Command
 final case object CMD_GETINFO extends Command
 final case class RES_GETINFO(nodeId: BinaryData, channelId: BinaryData, state: State, data: Data)
+final case object CMD_RESPEND_LOCAL extends Command
 
 /*
       8888888b.        d8888 88888888888     d8888
