@@ -187,8 +187,10 @@ class Router(nodeParams: NodeParams, watcher: ActorRef) extends FSM[State, Data]
           bitcoinKey1 = null,
           bitcoinKey2 = null)
         sender ! TransportHandler.ReadAck(c)
+        log.debug("acking channel announcement")
         // On Android, we don't validate announcements for now, it means that neither awaiting nor stashed announcements are used
         db.addChannel(c1, BinaryData(""), Satoshi(0))
+        log.debug("inserted to db")
         stay using d.copy(
           channels = d.channels + (c1.shortChannelId -> c1),
           privateChannels = d.privateChannels - c1.shortChannelId // we remove fake announcements that we may have made before)
@@ -389,8 +391,10 @@ class Router(nodeParams: NodeParams, watcher: ActorRef) extends FSM[State, Data]
     if (d.channels.contains(u.shortChannelId)) {
       // related channel is already known (note: this means no related channel_update is in the stash)
       val publicChannel = true
+      log.debug("getting related channel")
       val c = d.channels(u.shortChannelId)
       val desc = getDesc(u, c)
+      log.debug("got desc")
       if (isStale(u)) {
         log.debug("ignoring {} (stale)", u)
         d
@@ -404,17 +408,24 @@ class Router(nodeParams: NodeParams, watcher: ActorRef) extends FSM[State, Data]
       } else if (d.updates.contains(desc)) {
         log.debug("updated channel_update for shortChannelId={} public={} flags={} {}", u.shortChannelId, publicChannel, u.flags, u)
         context.system.eventStream.publish(ChannelUpdateReceived(u))
+        log.debug("updating db")
         db.updateChannelUpdate(u1)
         // we also need to update the graph
+        log.debug("removing edge")
         removeEdge(d.graph, desc)
+        log.debug("adding edge")
         addEdge(d.graph, desc, u1)
+        log.debug("updating map")
         d.copy(updates = d.updates + (desc -> u1))
       } else {
         log.debug("added channel_update for shortChannelId={} public={} flags={} {}", u.shortChannelId, publicChannel, u.flags, u)
         context.system.eventStream.publish(ChannelUpdateReceived(u))
+        log.debug("adding to db")
         db.addChannelUpdate(u1)
         // we also need to update the graph
+        log.debug("adding edge")
         addEdge(d.graph, desc, u1)
+        log.debug("updating map")
         d.copy(updates = d.updates + (desc -> u1), privateUpdates = d.privateUpdates - desc)
       }
     } else if (d.awaiting.keys.exists(c => c.shortChannelId == u.shortChannelId)) {
