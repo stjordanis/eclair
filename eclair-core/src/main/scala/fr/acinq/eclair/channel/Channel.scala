@@ -1445,6 +1445,10 @@ class Channel(val nodeParams: NodeParams, wallet: EclairWallet, remoteNodeId: Pu
 
     // we receive this when we send command to ourselves
     case Event("ok", _) => stay
+
+    case Event(WatchEventSpent(BITCOIN_FUNDING_SPENT, tx), d: HasCommitments) =>
+      log.warning(s"processing local commit spent in catch-all handler")
+      spendLocalCurrent(d)
   }
 
   onTransition {
