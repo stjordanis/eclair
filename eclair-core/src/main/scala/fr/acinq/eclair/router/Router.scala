@@ -49,15 +49,28 @@ import scala.util.Try
 // @formatter:off
 
 case class ChannelDesc(shortChannelId: ShortChannelId, a: PublicKey, b: PublicKey)
+
 case class Hop(nodeId: PublicKey, nextNodeId: PublicKey, lastUpdate: ChannelUpdate)
+
 case class RouteRequest(source: PublicKey, target: PublicKey, assistedRoutes: Seq[Seq[ExtraHop]] = Nil, ignoreNodes: Set[PublicKey] = Set.empty, ignoreChannels: Set[ChannelDesc] = Set.empty)
-case class RouteResponse(hops: Seq[Hop], ignoreNodes: Set[PublicKey], ignoreChannels: Set[ChannelDesc]) { require(hops.size > 0, "route cannot be empty") }
+
+case class RouteResponse(hops: Seq[Hop], ignoreNodes: Set[PublicKey], ignoreChannels: Set[ChannelDesc]) {
+  require(hops.size > 0, "route cannot be empty")
+}
+
 case class ExcludeChannel(desc: ChannelDesc) // this is used when we get a TemporaryChannelFailure, to give time for the channel to recover (note that exclusions are directed)
 case class LiftChannelExclusion(desc: ChannelDesc)
+
 case class SendChannelQuery(remoteNodeId: PublicKey, to: ActorRef)
+
+case class SendChannelQueryEx(remoteNodeId: PublicKey, to: ActorRef)
+
 case object GetRoutingState
+
 case class RoutingState(channels: Iterable[ChannelAnnouncement], updates: Iterable[ChannelUpdate], nodes: Iterable[NodeAnnouncement])
+
 case class Stash(updates: Map[ChannelUpdate, Set[ActorRef]], nodes: Map[NodeAnnouncement, Set[ActorRef]])
+
 case class Rebroadcast(channels: Map[ChannelAnnouncement, Set[ActorRef]], updates: Map[ChannelUpdate, Set[ActorRef]], nodes: Map[NodeAnnouncement, Set[ActorRef]])
 
 case class Sync(missing: SortedSet[ShortChannelId], count: Int)
@@ -65,22 +78,24 @@ case class Sync(missing: SortedSet[ShortChannelId], count: Int)
 case class DescEdge(desc: ChannelDesc, u: ChannelUpdate) extends DefaultWeightedEdge
 
 case class Data(nodes: Map[PublicKey, NodeAnnouncement],
-                  channels: SortedMap[ShortChannelId, ChannelAnnouncement],
-                  updates: Map[ChannelDesc, ChannelUpdate],
-                  stash: Stash,
-                  rebroadcast: Rebroadcast,
-                  awaiting: Map[ChannelAnnouncement, Seq[ActorRef]], // note: this is a seq because we want to preserve order: first actor is the one who we need to send a tcp-ack when validation is done
-                  privateChannels: Map[ShortChannelId, PublicKey], // short_channel_id -> node_id
-                  privateUpdates: Map[ChannelDesc, ChannelUpdate],
-                  excludedChannels: Set[ChannelDesc], // those channels are temporarily excluded from route calculation, because their node returned a TemporaryChannelFailure
-                  graph: DirectedWeightedPseudograph[PublicKey, DescEdge],
-                  sync: Map[PublicKey, Sync]
+                channels: SortedMap[ShortChannelId, ChannelAnnouncement],
+                updates: Map[ChannelDesc, ChannelUpdate],
+                stash: Stash,
+                rebroadcast: Rebroadcast,
+                awaiting: Map[ChannelAnnouncement, Seq[ActorRef]], // note: this is a seq because we want to preserve order: first actor is the one who we need to send a tcp-ack when validation is done
+                privateChannels: Map[ShortChannelId, PublicKey], // short_channel_id -> node_id
+                privateUpdates: Map[ChannelDesc, ChannelUpdate],
+                excludedChannels: Set[ChannelDesc], // those channels are temporarily excluded from route calculation, because their node returned a TemporaryChannelFailure
+                graph: DirectedWeightedPseudograph[PublicKey, DescEdge],
+                sync: Map[PublicKey, Sync]
                )
 
 sealed trait State
+
 case object NORMAL extends State
 
 case object TickBroadcast
+
 case object TickPruneStaleChannels
 
 // @formatter:on
@@ -418,6 +433,17 @@ class Router(nodeParams: NodeParams, watcher: ActorRef) extends FSMDiagnosticAct
       remote ! filter
       stay
 
+    case Event(SendChannelQueryEx(remoteNodeId, remote), _) =>
+      // ask for everything
+      val query = QueryChannelRangeEx(nodeParams.chainHash, firstBlockNum = 0, numberOfBlocks = Int.MaxValue)
+      log.info("sending query_channel_range_ex={}", query)
+      remote ! query
+
+      // we also set a pass-all filter for now (we can update it later)
+      val filter = GossipTimestampFilter(nodeParams.chainHash, firstTimestamp = 0, timestampRange = Int.MaxValue)
+      remote ! filter
+      stay
+
     // Warning: order matters here, this must be the first match for HasChainHash messages !
     case Event(PeerRoutingMessage(remoteNodeId, routingMessage: HasChainHash), d) if routingMessage.chainHash != nodeParams.chainHash =>
       sender ! TransportHandler.ReadAck(routingMessage)
@@ -472,6 +498,17 @@ class Router(nodeParams: NodeParams, watcher: ActorRef) extends FSMDiagnosticAct
       replies.foreach(reply => sender ! reply)
       stay
 
+    case Event(PeerRoutingMessage(_, routingMessage@QueryChannelRangeEx(chainHash, firstBlockNum, numberOfBlocks)), d) =>
+      sender ! TransportHandler.ReadAck(routingMessage)
+      log.info("received query_channel_range_ex={}", routingMessage)
+      // sort channel ids and keep the ones which are in [firstBlockNum, firstBlockNum + numberOfBlocks]
+      val shortChannelIds: SortedSet[ShortChannelId] = d.channels.keySet.filter(keep(firstBlockNum, numberOfBlocks, _, d.channels, d.updates))
+      val blocks = ChannelRangeQueriesEx.encodeShortChannelIdAndTimestamps(firstBlockNum, numberOfBlocks, shortChannelIds, Router.getTimestamp(d.channels, d.updates), ChannelRangeQueries.UNCOMPRESSED_FORMAT)
+      log.info("sending back reply_channel_range_ex with {} items for range=({}, {})", shortChannelIds.size, firstBlockNum, numberOfBlocks)
+      val replies = blocks.map(block => ReplyChannelRangeEx(chainHash, block.firstBlock, block.numBlocks, 1, block.shortChannelIdAndTimestamps))
+      replies.foreach(reply => sender ! reply)
+      stay
+
     case Event(PeerRoutingMessage(remoteNodeId, routingMessage@ReplyChannelRange(chainHash, firstBlockNum, numberOfBlocks, _, data)), d) =>
       sender ! TransportHandler.ReadAck(routingMessage)
       val (format, theirShortChannelIds, useGzip) = ChannelRangeQueries.decodeShortChannelIds(data)
@@ -486,7 +523,45 @@ class Router(nodeParams: NodeParams, watcher: ActorRef) extends FSMDiagnosticAct
       context.system.eventStream.publish(syncProgress(d1))
       stay using d1
 
+    case Event(PeerRoutingMessage(remoteNodeId, routingMessage@ReplyChannelRangeEx(chainHash, firstBlockNum, numberOfBlocks, _, data)), d) =>
+      sender ! TransportHandler.ReadAck(routingMessage)
+      val (format, theirTimestampMap) = ChannelRangeQueriesEx.decodeShortChannelIdAndTimestamps(data)
+      val theirShortChannelIds = theirTimestampMap.keySet
+      val ourShortChannelIds: SortedSet[ShortChannelId] = d.channels.keySet.filter(id => {
+        val TxCoordinates(height, _, _) = ShortChannelId.coordinates(id)
+        height >= firstBlockNum && height <= (firstBlockNum + numberOfBlocks)
+      })
+      val missing = theirShortChannelIds -- ourShortChannelIds
+      val outdated = ourShortChannelIds.filter(id => {
+        theirShortChannelIds.contains(id) && theirTimestampMap(id) > Router.getTimestamp(d.channels, d.updates)(id)
+      })
+      log.info("received reply_channel_range_ex, we're missing {} channel announcements and we have {} outdated channel annoucements, format={} ", missing.size, outdated.size, format)
+      val d1 = if (missing.nonEmpty || outdated.nonEmpty) {
+        val (slice, rest) = (missing ++ outdated).splitAt(SHORTID_WINDOW)
+        def flag(id: ShortChannelId) = if (outdated.contains(id)) 1.toByte else 0.toByte
+        sender ! QueryShortChannelIdsEx(chainHash, ChannelRangeQueriesEx.encodeShortChannelIdAndFlagSingle(slice, flag, format))
+        d.copy(sync = d.sync + (remoteNodeId -> Sync(rest, (missing ++ outdated).size)))
+      } else d
+      context.system.eventStream.publish(syncProgress(d1))
+      stay using d1
+
     case Event(PeerRoutingMessage(_, routingMessage@QueryShortChannelIds(chainHash, data)), d) =>
+      sender ! TransportHandler.ReadAck(routingMessage)
+      val (_, shortChannelIds, useGzip) = ChannelRangeQueries.decodeShortChannelIds(data)
+      log.info("received query_short_channel_ids for {} channel announcements, useGzip={}", shortChannelIds.size, useGzip)
+      shortChannelIds.foreach(shortChannelId => {
+        d.channels.get(shortChannelId) match {
+          case None => log.warning("received query for shortChannelId={} that we don't have", shortChannelId)
+          case Some(ca) =>
+            sender ! ca
+            d.updates.get(ChannelDesc(ca.shortChannelId, ca.nodeId1, ca.nodeId2)).map(u => sender ! u)
+            d.updates.get(ChannelDesc(ca.shortChannelId, ca.nodeId2, ca.nodeId1)).map(u => sender ! u)
+        }
+      })
+      sender ! ReplyShortChannelIdsEnd(chainHash, 1)
+      stay
+
+    case Event(PeerRoutingMessage(_, routingMessage@QueryShortChannelIdsEx(chainHash, data)), d) =>
       sender ! TransportHandler.ReadAck(routingMessage)
       val (_, shortChannelIds, useGzip) = ChannelRangeQueries.decodeShortChannelIds(data)
       log.info("received query_short_channel_ids for {} channel announcements, useGzip={}", shortChannelIds.size, useGzip)
@@ -752,6 +827,27 @@ object Router {
       updates.keys.filter(desc => ignoreNodes.contains(desc.a) || ignoreNodes.contains(desc.b))
     }
     desc
+  }
+
+  /**
+    *
+    * @param channels id -> announcement map
+    * @param updates channel updates
+    * @param id short channel id
+    * @return the timestamp of the most recent update for this channel id, 0 if we don't have any
+    */
+  def getTimestamp(channels: SortedMap[ShortChannelId, ChannelAnnouncement], updates: Map[ChannelDesc, ChannelUpdate])(id: ShortChannelId): Long = {
+    val ca = channels(id)
+    val opt1 = updates.get(ChannelDesc(ca.shortChannelId, ca.nodeId1, ca.nodeId2))
+    val opt2 = updates.get(ChannelDesc(ca.shortChannelId, ca.nodeId2, ca.nodeId1))
+    val timestamp = (opt1, opt2) match {
+      case (Some(u1), Some(u2)) => Math.max(u1.timestamp, u2.timestamp)
+      case (Some(u1), None) => u1.timestamp
+      case (None, Some(u2)) => u2.timestamp
+      case (None, None) =>
+        0L
+    }
+    timestamp
   }
 
   /**
